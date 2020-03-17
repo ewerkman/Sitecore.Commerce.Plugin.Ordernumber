@@ -8,7 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Booker.Commerce.Plugins.Order
+namespace  Sitecore.Commerce.Plugin.Ordernumber.Pipelines.Blocks
 {
     public class GetNextCounterValueBlock : PipelineBlock<GetNextCounterValueArgument, long, CommercePipelineExecutionContext>
     {
