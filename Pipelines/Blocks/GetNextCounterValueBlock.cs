@@ -1,28 +1,15 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="GetNextCounterValueBlockBlock.cs" company="Sitecore Corporation">
-//   Copyright (c) Sitecore Corporation 1999-2019
-// </copyright>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using Sitecore.Commerce.Core;
+using Sitecore.Framework.Conditions;
+using Sitecore.Framework.Pipelines;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
-namespace Sitecore.Commerce.Plugin.Ordernumber.Pipelines.Blocks
+namespace Booker.Commerce.Plugins.Order
 {
-    using Sitecore.Commerce.Core;
-    using Sitecore.Framework.Conditions;
-    using Sitecore.Framework.Pipelines;
-    using Sitecore.Commerce.Plugin.Ordernumber.Entities;
-    using Sitecore.Commerce.Plugin.Ordernumber.Pipelines.Arguments;
-    using System.Threading.Tasks;
-
-    /// <summary>
-    /// Defines a pipeline block
-    /// </summary>
-    /// <seealso>
-    ///     <cref>
-    ///         Sitecore.Framework.Pipelines.PipelineBlock{Sitecore.Commerce.Core.PipelineArgument,
-    ///         Sitecore.Commerce.Core.PipelineArgument, Sitecore.Commerce.Core.CommercePipelineExecutionContext}
-    ///     </cref>
-    /// </seealso>
-    [PipelineDisplayName("Change to <Project>Constants.Pipelines.Blocks.<Block Name>")]
     public class GetNextCounterValueBlock : PipelineBlock<GetNextCounterValueArgument, long, CommercePipelineExecutionContext>
     {
         /// <summary>
@@ -32,8 +19,9 @@ namespace Sitecore.Commerce.Plugin.Ordernumber.Pipelines.Blocks
         /// The commander.
         /// </value>
         protected CommerceCommander Commander { get; set; }
-
-        private readonly object counterLock = new object();
+        
+        //Instantiate a Singleton of the Semaphore with a value of 1. This means that only 1 thread can be granted access at a time.
+        private static SemaphoreSlim semaphoreSlim = new SemaphoreSlim(1, 1);
 
         /// <inheritdoc />
         /// <summary>Initializes a new instance of the <see cref="T:Sitecore.Framework.Pipelines.PipelineBlock" /> class.</summary>
@@ -59,33 +47,47 @@ namespace Sitecore.Commerce.Plugin.Ordernumber.Pipelines.Blocks
         public override async Task<long> Run(GetNextCounterValueArgument arg, CommercePipelineExecutionContext context)
         {
             Condition.Requires(arg).IsNotNull($"{this.Name}: The argument can not be null");
-
-            var entityId = $"{CommerceEntity.IdPrefix<Counter>()}{arg.CounterName}";
-
-            var counter = await Commander.GetEntity<Counter>(context.CommerceContext, entityId);
-
-            if(counter == null)
+            await semaphoreSlim.WaitAsync();
+            try
             {
-                context.Abort(
-                      await context.CommerceContext.AddMessage(
-                          context.GetPolicy<KnownResultCodes>().ValidationError,
-                          "CounterNameAlreadyInUse",
-                          new object[] { arg.CounterName },
-                          $"Counter name {arg.CounterName} is already in use.").ConfigureAwait(false),
-                      context);
+                var entityId = $"{CommerceEntity.IdPrefix<Counter>()}{arg.CounterName}";
 
-                return -1;
-            }
+                var counter = await Commander.GetEntity<Counter>(context.CommerceContext, entityId);
 
-            long nextCounterValue = -1;
+                if (counter == null)
+                {
+                    context.Abort(
+                          await context.CommerceContext.AddMessage(
+                              context.GetPolicy<KnownResultCodes>().ValidationError,
+                              "CounterNameAlreadyInUse",
+                              new object[] { arg.CounterName },
+                              $"Counter name {arg.CounterName} is already in use.").ConfigureAwait(false),
+                          context);
 
-            lock (counterLock)
-            {
+                    return -1;
+                }
+
+                long nextCounterValue = -1;
+
+
                 nextCounterValue = counter.GetNextValue();
-                Commander.PersistEntity(context.CommerceContext, counter);
+                await Commander.PersistEntity(context.CommerceContext, counter);
+
+
+                return nextCounterValue;
+            }
+            catch (Exception ex)
+            {
+                context.CommerceContext.LogException(this.Name, ex);
+            }
+            finally
+            {
+                //When the task is ready, release the semaphore. It is vital to ALWAYS release the semaphore when we are ready, or else we will end up with a Semaphore that is forever locked.
+                //This is why it is important to do the Release within a try...finally clause; program execution may crash or take a different path, this way you are guaranteed execution
+                semaphoreSlim.Release();
             }
 
-            return nextCounterValue;
+            return -1;
         }
     }
 }
